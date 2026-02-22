@@ -17,7 +17,11 @@
 
 ## 🎙️ Voice-Activated Multi-Tool Agentic Demo
 
-[![Demo Video](https://img.youtube.com/vi/vo0RlKVuroE/0.jpg)](https://youtu.be/vo0RlKVuroE)
+<p align="center">
+  <a href="https://youtu.be/vo0RlKVuroE">
+    <img src="https://img.youtube.com/vi/vo0RlKVuroE/0.jpg" alt="Demo Video">
+  </a>
+</p>
 
 
 **Try it live:** Open `demo/index.html` in Edge or Chrome.
