@@ -15,9 +15,18 @@
 
 ---
 
-## 🎙️ Voice Demo
+## 🎙️ Voice-Activated Multi-Tool Agentic Demo
 
-![SwissblAIz Assistant Demo](Agentic_RAG_v2_hybrid/demo/screenshot.png)
+<div align="center">
+  <iframe width="560" height="315"
+    src="https://www.youtube.com/embed/vo0RlKVuroE"
+    title="Demo Video"
+    frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+    allowfullscreen>
+  </iframe>
+</div>
+
 
 **Try it live:** Open `demo/index.html` in Edge or Chrome.
 
