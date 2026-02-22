@@ -5,7 +5,7 @@
 
 ## 🎙️ Voice Demo
 
-![SwissblAIz Assistant Demo](demo/screenshot.png)
+![SwissblAIz Assistant Demo](Agentic_RAG_v2_hybrid/demo/screenshot.png)
 
 **Try it live:** Open `demo/index.html` in Edge or Chrome.
 
