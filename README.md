@@ -17,15 +17,7 @@
 
 ## 🎙️ Voice-Activated Multi-Tool Agentic Demo
 
-<div align="center">
-  <iframe width="560" height="315"
-    src="https://www.youtube.com/embed/vo0RlKVuroE"
-    title="Demo Video"
-    frameborder="0"
-    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-    allowfullscreen>
-  </iframe>
-</div>
+[![Demo Video](https://img.youtube.com/vi/vo0RlKVuroE/0.jpg)](https://youtu.be/vo0RlKVuroE)
 
 
 **Try it live:** Open `demo/index.html` in Edge or Chrome.
