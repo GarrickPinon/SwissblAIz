@@ -1,7 +1,19 @@
-# SwissblAIz V3 — Hybrid Voice Assistant 🌵
+# 🌵 SwissblAIz V3 — Hybrid Voice Assistant
 
-> **On-device voice assistant** powered by FunctionGemma-270M + Gemini Flash cloud fallback.  
-> Built for the Cactus × DeepMind Hackathon.
+<div align="center">
+
+### Built for the **Google DeepMind × Cactus Compute** Hackathon
+
+[![Google DeepMind](https://img.shields.io/badge/Google_DeepMind-4285F4?style=for-the-badge&logo=google&logoColor=white)](https://deepmind.google/)
+[![Cactus Compute](https://img.shields.io/badge/Cactus_Compute-00C853?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHRleHQgeT0iMTgiIGZvbnQtc2l6ZT0iMTgiPvCfjLU8L3RleHQ+PC9zdmc+&logoColor=white)](https://cactuscompute.com)
+[![FunctionGemma](https://img.shields.io/badge/FunctionGemma_270M-FF6F00?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+[![Gemini Flash](https://img.shields.io/badge/Gemini_Flash-886FBF?style=for-the-badge&logo=google&logoColor=white)](https://ai.google.dev/)
+
+**On-device voice assistant** powered by FunctionGemma-270M + Gemini Flash cloud fallback
+
+</div>
+
+---
 
 ## 🎙️ Voice Demo
 
@@ -19,7 +31,7 @@ Features:
 
 ## Architecture
 
-```
+```text
 User Query (Voice / Text)
     │
     ▼
@@ -30,7 +42,7 @@ User Query (Voice / Text)
          │
          ▼
 ┌─────────────────────────┐
-│  cactus_auth + SDK v1.7 │  ◄ Unified hybrid path
+│  Cactus SDK + Gemma     │  ◄ Unified hybrid path
 │  threshold → routing    │    SDK handles escalation
 └────────┬────────────────┘
          │
@@ -51,18 +63,18 @@ User Query (Voice / Text)
 
 ## Scoring Formula
 
-| Component | Weight | Strategy |
-|-----------|--------|----------|
-| F1 (correctness) | 60% | TRN validation + cloud escalation for hard queries |
-| Time (<500ms) | 15% | Local-first = <100ms, cloud only when needed |
-| On-device ratio | 25% | Maximize local, cloud is last resort |
+| Component        | Weight | Strategy                                             |
+| ---------------- | ------ | ---------------------------------------------------- |
+| F1 (correctness) | 60%    | TRN validation + cloud escalation for hard queries   |
+| Time (<500ms)    | 15%    | Local-first = <100ms, cloud only when needed         |
+| On-device ratio  | 25%    | Maximize local, cloud is last resort                 |
 
 Difficulty weights: Easy 20%, Medium 30%, **Hard 50%**
 
 ## Key Innovations
 
-1. **Cactus SDK v1.7 Unified Path** — Single `cactus_complete` call with native hybrid routing
-2. **`cactus_auth` Cloud Fallback** — SDK-managed escalation to Gemini Flash
+1. **Cactus SDK Unified Path** — Single `cactus_complete` call with native hybrid routing
+2. **Cloud Fallback** — SDK-managed escalation to Gemini Flash for complex queries
 3. **Deterministic Complexity Router** — No LLM needed for routing, zero latency overhead
 4. **TRN Validator** — Validates every tool call against its JSON schema
 5. **Voice-First UI** — Animated orb, action cards, pipeline telemetry
@@ -88,3 +100,7 @@ python submit.py --team "SwissblAIz" --location "Online"
 ## Team
 
 **SwissblAIz** 🌵
+
+Built with ❤️ for the **Google DeepMind × Cactus Compute** Hackathon
+
+*Powered by [FunctionGemma-270M](https://ai.google.dev/) (on-device) + [Gemini Flash](https://ai.google.dev/) (cloud)*
