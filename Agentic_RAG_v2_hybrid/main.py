@@ -3,22 +3,21 @@ sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
 import json, os, time, re
-from cactus import cactus_init, cactus_complete, cactus_destroy
-
-try:
-    from google import genai
-    gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
-except Exception:
-    gemini_client = None
-
 
 # ═══════════════════════════════════════════════════════════════
-# PHASE 8 FROZEN CONFIG — Do not modify
+# v1.7 UNIFIED IMPORTS — CactusClient + CactusAuth
 # ═══════════════════════════════════════════════════════════════
-CONFIDENCE_THRESHOLD_EASY = 0.40     # Easy: trust FunctionGemma more
-CONFIDENCE_THRESHOLD_MEDIUM = 0.50   # Medium: slightly higher bar
-CONFIDENCE_THRESHOLD_HARD = 0.30     # Hard: lower bar (multi-call is hard for 270M)
-CLOUD_MODEL = "gemini-2.0-flash"     # Fast + cheap cloud fallback
+from cactus import CactusClient, CactusAuth
+
+# ═══════════════════════════════════════════════════════════════
+# CONFIG
+# ═══════════════════════════════════════════════════════════════
+CONFIDENCE_THRESHOLD_EASY = 0.40
+CONFIDENCE_THRESHOLD_MEDIUM = 0.50
+CONFIDENCE_THRESHOLD_HARD = 0.30
+CLOUD_MODEL = "gemini-2.0-flash"
+
+API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -130,13 +129,49 @@ def postprocess_call(call: dict, tools: list) -> dict:
             expected_type = properties[key].get("type", "string")
             if expected_type == "integer":
                 fixed_args[key] = _normalize_integer(val)
+            elif expected_type == "number":
+                fixed_args[key] = float(val) if not isinstance(val, (int, float)) else val
+            elif expected_type == "boolean":
+                if isinstance(val, str):
+                    fixed_args[key] = val.lower() in ("true", "1", "yes")
+                else:
+                    fixed_args[key] = bool(val)
             elif expected_type == "string":
                 fixed_args[key] = _normalize_string(val)
+            elif expected_type == "array":
+                if isinstance(val, str):
+                    try: fixed_args[key] = json.loads(val)
+                    except: fixed_args[key] = [val]
+                else:
+                    fixed_args[key] = val
             else:
                 fixed_args[key] = val
         else:
-            fixed_args[key] = val
-            
+            # Fuzzy key matching
+            matched = False
+            for prop_key in properties:
+                if key.lower().replace('_','').replace('-','') == prop_key.lower().replace('_','').replace('-',''):
+                    fixed_args[prop_key] = val
+                    matched = True
+                    break
+            if not matched:
+                fixed_args[key] = val
+    
+    # Fill missing required args with defaults
+    required = schema.get("parameters", {}).get("required", [])
+    for req in required:
+        if req not in fixed_args:
+            prop = properties.get(req, {})
+            ptype = prop.get("type", "string")
+            if ptype == "string":
+                fixed_args[req] = ""
+            elif ptype == "integer":
+                fixed_args[req] = 0
+            elif ptype == "boolean":
+                fixed_args[req] = False
+            elif ptype == "array":
+                fixed_args[req] = []
+    
     return {"name": name, "arguments": fixed_args}
 
 
@@ -166,13 +201,13 @@ def _normalize_string(v):
 
 def generate_hybrid(messages, tools, confidence_threshold=0.5):
     """
-    SwissblAIz V3 Hybrid Compute — Unified SDK Path.
+    SwissblAIz V3 Hybrid Compute — Unified SDK v1.7 Path.
     
-    The SDK handles:
-      - Hybrid routing (On-Device vs Cloud)
-      - System prompt injection (Triggering tool-calling mode)
-      - Cloud fallback via cactus_auth
-      - JSON formatting and schema enforcement
+    Uses CactusClient + CactusAuth for proper hybrid routing:
+      - Auth object enables cloud fallback via Gemini Flash
+      - Tools passed as JSON string (required by SDK)
+      - Messages passed as JSON string (required by SDK)
+      - threshold controls on-device vs cloud routing
     """
     user_text = next((m["content"] for m in messages if m["role"] == "user"), "")
     complexity = classify_complexity(user_text, tools)
@@ -185,74 +220,57 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
     }
     threshold = THRESHOLDS.get(complexity, confidence_threshold)
     
-    # ── Step 1: Try On-Device via Cactus SDK ──
-    model = cactus_init(functiongemma_path)
+    # ── v1.7 Wiring: Auth + Client ──
+    auth = CactusAuth(api_key=API_KEY)
+    client = CactusClient(auth=auth)
+    
+    # ── Convert to JSON strings (required by SDK v1.7) ──
+    messages_json = json.dumps(messages)
+    tools_json = json.dumps(tools)
+    
+    t0 = time.time()
     
     try:
-        raw_str = cactus_complete(
-            model,
-            messages, 
-            tools=tools,
-            temperature=0.0,
+        # ── Single Unified Call ──
+        raw_str = client.cactus_complete(
+            messages=messages_json,
+            tools=tools_json,
+            threshold=threshold,
             max_tokens=512,
         )
+        elapsed_ms = int((time.time() - t0) * 1000)
     except Exception as e:
-        raw_str = json.dumps({"function_calls": [], "confidence": 0, "source": f"cactus-error: {e}"})
-    finally:
-        cactus_destroy(model)
+        print(f"  [ERROR] cactus_complete failed: {e}")
+        elapsed_ms = int((time.time() - t0) * 1000)
+        raw_str = json.dumps({
+            "function_calls": [],
+            "confidence": 0,
+            "source": f"cactus-error: {e}",
+            "total_time_ms": elapsed_ms,
+        })
     
+    # ── Parse response ──
     try:
-        raw = json.loads(raw_str)
+        raw = json.loads(raw_str) if isinstance(raw_str, str) else raw_str
     except json.JSONDecodeError:
         raw = {"function_calls": [], "confidence": 0}
     
-    local_confidence = raw.get("confidence", 0)
-    calls = raw.get("function_calls") or raw.get("tool_calls") or raw.get("calls") or []
-    source = raw.get("source", "on-device")
-    total_time = raw.get("total_time_ms", 0)
+    # Robust key extraction for various SDK versions
+    calls = (raw.get("function_calls") 
+             or raw.get("tool_calls") 
+             or raw.get("calls") 
+             or raw.get("response", {}).get("function_calls", [])
+             or raw.get("output", {}).get("function_calls", [])
+             or [])
     
-    # ── Step 2: Cloud Fallback if confidence too low or no calls ──
-    if (local_confidence < threshold or len(calls) == 0) and gemini_client:
-        try:
-            tool_desc = "\n".join(
-                f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}"
-                for t in tools
-            )
-            system_prompt = (
-                "You are a function-calling assistant. Given the user query, "
-                "return a JSON object with a 'function_calls' array. Each call "
-                "must have 'name' (string) and 'arguments' (object).\n\n"
-                f"Available tools:\n{tool_desc}\n\n"
-                "Return ONLY valid JSON. No explanation."
-            )
-            
-            cloud_messages = [
-                {"role": "user", "parts": [{"text": system_prompt + "\n\nUser: " + messages[-1].get('content', '')}]}
-            ]
-            
-            cloud_start = time.time()
-            response = gemini_client.models.generate_content(
-                model=CLOUD_MODEL,
-                contents=cloud_messages,
-            )
-            cloud_time = int((time.time() - cloud_start) * 1000)
-            
-            cloud_text = response.text.strip()
-            # Strip markdown code fences if present
-            if cloud_text.startswith("```"):
-                cloud_text = re.sub(r'^```(?:json)?\s*', '', cloud_text)
-                cloud_text = re.sub(r'\s*```$', '', cloud_text)
-            
-            cloud_raw = json.loads(cloud_text)
-            calls = cloud_raw.get("function_calls") or cloud_raw.get("tool_calls") or []
-            source = "cloud"
-            total_time = cloud_time
-            local_confidence = 0.95  # Cloud is high confidence
-        except Exception as e:
-            # Cloud failed too — keep whatever on-device returned
-            source = f"cloud-error: {str(e)}"
+    confidence = raw.get("confidence", 0)
+    source = raw.get("source", raw.get("model", raw.get("routing", "unknown")))
+    total_time = raw.get("total_time_ms", raw.get("latency", elapsed_ms))
     
-    # ── Step 3: Post-process and validate ──
+    print(f"  [RESULT] source={source}, confidence={confidence}, calls={len(calls)}, "
+          f"complexity={complexity}, time={total_time}ms")
+    
+    # ── Post-process and validate ──
     try:
         processed_calls = [postprocess_call(c, tools) for c in calls]
         trn = validate_tool_calls(processed_calls, tools)
@@ -260,7 +278,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
         return {
             "function_calls": processed_calls,
             "total_time_ms": total_time,
-            "confidence": local_confidence,
+            "confidence": confidence,
             "source": source,
             "complexity": complexity,
             "trn_score": trn["score"],
@@ -276,7 +294,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
             "trn_score": 0,
         }
 
-# Wrapper functions for backward compatibility/benchmark expectations
+# Wrapper functions for backward compatibility
 def generate_local(messages, tools):
     return generate_hybrid(messages, tools, confidence_threshold=1.0)
 
@@ -306,7 +324,7 @@ if __name__ == "__main__":
     print("\n--- SwissblAIz V3 Hybrid Test ---")
     result = generate_hybrid(messages, tools)
     print(f"Source:     {result['source']}")
-    print(f"Confidence: {result['confidence']:.4f}")
+    print(f"Confidence: {result['confidence']}")
     print(f"Complexity: {result['complexity']}")
     print(f"Calls:      {len(result['function_calls'])}")
     for c in result['function_calls']:
