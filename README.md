@@ -66,15 +66,6 @@ User Query (Voice / Text)
 └─────────────────────────┘
 ```
 
-## Scoring Formula
-
-| Component        | Weight | Strategy                                             |
-| ---------------- | ------ | ---------------------------------------------------- |
-| F1 (correctness) | 60%    | TRN validation + cloud escalation for hard queries   |
-| Time (<500ms)    | 15%    | Local-first = <100ms, cloud only when needed         |
-| On-device ratio  | 25%    | Maximize local, cloud is last resort                 |
-
-Difficulty weights: Easy 20%, Medium 30%, **Hard 50%**
 
 ## Key Innovations
 
