@@ -2,22 +2,20 @@ import sys
 sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
-import json, os, time, re
-
-# ═══════════════════════════════════════════════════════════════
-# v1.7 UNIFIED IMPORTS — CactusClient + CactusAuth
-# ═══════════════════════════════════════════════════════════════
-from cactus import CactusClient, CactusAuth
+import json, os, time, re, requests
 
 # ═══════════════════════════════════════════════════════════════
 # CONFIG
 # ═══════════════════════════════════════════════════════════════
+from cactus import cactus_init, cactus_complete, cactus_destroy
+
 CONFIDENCE_THRESHOLD_EASY = 0.40
 CONFIDENCE_THRESHOLD_MEDIUM = 0.50
 CONFIDENCE_THRESHOLD_HARD = 0.30
 CLOUD_MODEL = "gemini-2.0-flash"
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{CLOUD_MODEL}:generateContent?key={GEMINI_API_KEY}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -25,9 +23,6 @@ API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # ═══════════════════════════════════════════════════════════════
 
 def classify_complexity(message_text: str, tools: list) -> str:
-    """
-    Classify query complexity without any LLM call.
-    """
     num_tools = len(tools)
     text_lower = message_text.lower()
     
@@ -61,11 +56,10 @@ def classify_complexity(message_text: str, tools: list) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 2. SCHEMA VALIDATOR (TRN) — Deterministic, <1ms
+# 2. SCHEMA VALIDATOR (TRN)
 # ═══════════════════════════════════════════════════════════════
 
 def validate_tool_calls(function_calls: list, tools: list) -> dict:
-    """Validate tool call output against schemas."""
     if not function_calls:
         return {"valid": False, "errors": ["No function calls produced"], "score": 0.0}
     
@@ -98,16 +92,17 @@ def validate_tool_calls(function_calls: list, tools: list) -> dict:
 # ═══════════════════════════════════════════════════════════════
 
 def postprocess_call(call: dict, tools: list) -> dict:
-    """Normalize function calls for maximum F1 accuracy."""
     name = call.get("name", "")
     args = call.get("arguments", {})
     
-    # 270M sometimes provides arguments as strings
     if isinstance(args, str):
         try:
             args = json.loads(args)
         except:
             pass
+    
+    if not isinstance(args, dict):
+        args = {}
             
     tool_map = {t["name"]: t for t in tools}
     if name not in tool_map:
@@ -196,23 +191,19 @@ def _normalize_string(v):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 4. UNIFIED GENERATION — Cactus SDK v1.7 Path
+# 4. UNIFIED GENERATION — Function API + REST Cloud Fallback
 # ═══════════════════════════════════════════════════════════════
 
 def generate_hybrid(messages, tools, confidence_threshold=0.5):
     """
-    SwissblAIz V3 Hybrid Compute — Unified SDK v1.7 Path.
+    SwissblAIz V3 Hybrid Compute.
     
-    Uses CactusClient + CactusAuth for proper hybrid routing:
-      - Auth object enables cloud fallback via Gemini Flash
-      - Tools passed as JSON string (required by SDK)
-      - Messages passed as JSON string (required by SDK)
-      - threshold controls on-device vs cloud routing
+    Uses cactus function API (cactus_init/complete/destroy) for on-device,
+    and direct Gemini REST API via requests for cloud fallback.
     """
     user_text = next((m["content"] for m in messages if m["role"] == "user"), "")
     complexity = classify_complexity(user_text, tools)
     
-    # Map to difficulty-based thresholds
     THRESHOLDS = {
         "EASY": CONFIDENCE_THRESHOLD_EASY,
         "MEDIUM": CONFIDENCE_THRESHOLD_MEDIUM,
@@ -220,57 +211,94 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
     }
     threshold = THRESHOLDS.get(complexity, confidence_threshold)
     
-    # ── v1.7 Wiring: Auth + Client ──
-    auth = CactusAuth(api_key=API_KEY)
-    client = CactusClient(auth=auth)
-    
-    # ── Convert to JSON strings (required by SDK v1.7) ──
-    messages_json = json.dumps(messages)
-    tools_json = json.dumps(tools)
-    
-    t0 = time.time()
+    # ── Step 1: On-Device via cactus function API ──
+    model = cactus_init(functiongemma_path)
     
     try:
-        # ── Single Unified Call ──
-        raw_str = client.cactus_complete(
-            messages=messages_json,
-            tools=tools_json,
-            threshold=threshold,
+        raw_str = cactus_complete(
+            model,
+            messages, 
+            tools=tools,
+            temperature=0.0,
             max_tokens=512,
         )
-        elapsed_ms = int((time.time() - t0) * 1000)
     except Exception as e:
-        print(f"  [ERROR] cactus_complete failed: {e}")
-        elapsed_ms = int((time.time() - t0) * 1000)
-        raw_str = json.dumps({
-            "function_calls": [],
-            "confidence": 0,
-            "source": f"cactus-error: {e}",
-            "total_time_ms": elapsed_ms,
-        })
+        raw_str = json.dumps({"function_calls": [], "confidence": 0, "source": f"cactus-error: {e}"})
+    finally:
+        cactus_destroy(model)
     
-    # ── Parse response ──
     try:
         raw = json.loads(raw_str) if isinstance(raw_str, str) else raw_str
     except json.JSONDecodeError:
         raw = {"function_calls": [], "confidence": 0}
     
-    # Robust key extraction for various SDK versions
-    calls = (raw.get("function_calls") 
-             or raw.get("tool_calls") 
-             or raw.get("calls") 
-             or raw.get("response", {}).get("function_calls", [])
-             or raw.get("output", {}).get("function_calls", [])
-             or [])
+    local_confidence = raw.get("confidence", 0)
+    calls = raw.get("function_calls") or raw.get("tool_calls") or raw.get("calls") or []
+    source = raw.get("source", "on-device")
+    total_time = raw.get("total_time_ms", 0)
     
-    confidence = raw.get("confidence", 0)
-    source = raw.get("source", raw.get("model", raw.get("routing", "unknown")))
-    total_time = raw.get("total_time_ms", raw.get("latency", elapsed_ms))
+    # ── Step 2: Cloud Fallback via direct Gemini REST API ──
+    needs_cloud = local_confidence < threshold or len(calls) == 0
+    print(f"  [ROUTING] complexity={complexity}, confidence={local_confidence}, "
+          f"threshold={threshold}, needs_cloud={needs_cloud}")
     
-    print(f"  [RESULT] source={source}, confidence={confidence}, calls={len(calls)}, "
-          f"complexity={complexity}, time={total_time}ms")
+    if needs_cloud and GEMINI_API_KEY:
+        try:
+            tool_desc = "\n".join(
+                f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}"
+                for t in tools
+            )
+            system_prompt = (
+                "You are a precise function-calling assistant. Given the user query, "
+                "return a JSON object with a 'function_calls' array. Each element "
+                "must have 'name' (string matching an available tool) and 'arguments' (object "
+                "with all required parameters filled correctly).\n\n"
+                f"Available tools:\n{tool_desc}\n\n"
+                "RULES:\n"
+                "1. Return ONLY valid JSON, no markdown, no explanation\n"
+                "2. Match parameter names EXACTLY as defined in the schema\n"
+                "3. Use correct types: strings for string params, integers for integer params\n"
+                "4. Include ALL required parameters\n"
+                "5. For multiple intents, include multiple function calls\n\n"
+                'Example output: {"function_calls": [{"name": "tool_name", "arguments": {"param": "value"}}]}'
+            )
+            
+            payload = {
+                "contents": [{
+                    "role": "user",
+                    "parts": [{"text": system_prompt + "\n\nUser: " + user_text}]
+                }],
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "maxOutputTokens": 1024,
+                }
+            }
+            
+            cloud_start = time.time()
+            resp = requests.post(GEMINI_URL, json=payload, timeout=30)
+            cloud_time = int((time.time() - cloud_start) * 1000)
+            
+            if resp.status_code == 200:
+                cloud_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Strip markdown code fences if present
+                if cloud_text.startswith("```"):
+                    cloud_text = re.sub(r'^```(?:json)?\s*', '', cloud_text)
+                    cloud_text = re.sub(r'\s*```$', '', cloud_text)
+                
+                cloud_raw = json.loads(cloud_text)
+                calls = cloud_raw.get("function_calls") or cloud_raw.get("tool_calls") or []
+                source = "cloud"
+                total_time = cloud_time
+                local_confidence = 0.95
+                print(f"  [CLOUD] OK — {len(calls)} calls in {cloud_time}ms")
+            else:
+                print(f"  [CLOUD] HTTP {resp.status_code}: {resp.text[:200]}")
+                source = f"cloud-http-{resp.status_code}"
+        except Exception as e:
+            print(f"  [CLOUD] Error: {str(e)[:200]}")
+            source = f"cloud-error: {str(e)[:100]}"
     
-    # ── Post-process and validate ──
+    # ── Step 3: Post-process and validate ──
     try:
         processed_calls = [postprocess_call(c, tools) for c in calls]
         trn = validate_tool_calls(processed_calls, tools)
@@ -278,7 +306,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
         return {
             "function_calls": processed_calls,
             "total_time_ms": total_time,
-            "confidence": confidence,
+            "confidence": local_confidence,
             "source": source,
             "complexity": complexity,
             "trn_score": trn["score"],
@@ -294,7 +322,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
             "trn_score": 0,
         }
 
-# Wrapper functions for backward compatibility
+# Wrapper functions
 def generate_local(messages, tools):
     return generate_hybrid(messages, tools, confidence_threshold=1.0)
 
@@ -328,4 +356,4 @@ if __name__ == "__main__":
     print(f"Complexity: {result['complexity']}")
     print(f"Calls:      {len(result['function_calls'])}")
     for c in result['function_calls']:
-        print(f"  → {c['name']}({c['arguments']})")
+        print(f"  -> {c['name']}({c['arguments']})")
