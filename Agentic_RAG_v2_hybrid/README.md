@@ -1,0 +1,90 @@
+# SwissblAIz V3 — Hybrid Voice Assistant 🌵
+
+> **On-device voice assistant** powered by FunctionGemma-270M + Gemini Flash cloud fallback.  
+> Built for the Cactus × DeepMind Hackathon.
+
+## 🎙️ Voice Demo
+
+![SwissblAIz Assistant Demo](demo/screenshot.png)
+
+**Try it live:** Open `demo/index.html` in Edge or Chrome.
+
+Features:
+
+- 🎤 **Voice-first** — Tap the orb, speak naturally
+- ⚡ **On-device inference** — 50-80ms via FunctionGemma-270M
+- ☁️ **Cloud escalation** — Auto-routes hard queries to Gemini Flash
+- 🇦🇺 **Australian male voice** — TTS responses via Microsoft Neural voices
+- 📊 **Real-time pipeline** — See STT → Classify → Route → Infer → TTS live
+
+## Architecture
+
+```
+User Query (Voice / Text)
+    │
+    ▼
+┌─────────────────────────┐
+│  COMPLEXITY ROUTER      │  ◄ Deterministic, <1ms
+│  EASY | MEDIUM | HARD   │    No LLM call
+└────────┬────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│  cactus_auth + SDK v1.7 │  ◄ Unified hybrid path
+│  threshold → routing    │    SDK handles escalation
+└────────┬────────────────┘
+         │
+    ┌────┴────┐
+    ▼         ▼
+┌────────┐ ┌──────────┐
+│ ⚡ Local│ │ ☁️ Cloud  │
+│ 50-80ms│ │ 200-500ms│
+│ GemMA  │ │ Gemini   │
+└───┬────┘ └────┬─────┘
+    │            │
+    ▼            ▼
+┌─────────────────────────┐
+│  TRN VALIDATOR          │  ◄ Schema + type check
+│  + Postprocessor        │    F1 normalization
+└─────────────────────────┘
+```
+
+## Scoring Formula
+
+| Component | Weight | Strategy |
+|-----------|--------|----------|
+| F1 (correctness) | 60% | TRN validation + cloud escalation for hard queries |
+| Time (<500ms) | 15% | Local-first = <100ms, cloud only when needed |
+| On-device ratio | 25% | Maximize local, cloud is last resort |
+
+Difficulty weights: Easy 20%, Medium 30%, **Hard 50%**
+
+## Key Innovations
+
+1. **Cactus SDK v1.7 Unified Path** — Single `cactus_complete` call with native hybrid routing
+2. **`cactus_auth` Cloud Fallback** — SDK-managed escalation to Gemini Flash
+3. **Deterministic Complexity Router** — No LLM needed for routing, zero latency overhead
+4. **TRN Validator** — Validates every tool call against its JSON schema
+5. **Voice-First UI** — Animated orb, action cards, pipeline telemetry
+
+## Running
+
+```bash
+# Setup (one-time)
+git clone https://github.com/cactus-compute/cactus
+cd cactus && source ./setup && cd ..
+cactus build --python
+cactus download google/functiongemma-270m-it --reconvert
+pip install google-genai requests
+export GEMINI_API_KEY="your-key"
+
+# Run voice demo
+open demo/index.html
+
+# Submit to leaderboard
+python submit.py --team "SwissblAIz" --location "Online"
+```
+
+## Team
+
+**SwissblAIz** 🌵
