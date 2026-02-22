@@ -3,7 +3,13 @@ sys.path.insert(0, "cactus/python/src")
 functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
 import json, os, time, re
-from cactus import cactus_init, cactus_complete, cactus_destroy, cactus_auth
+from cactus import cactus_init, cactus_complete, cactus_destroy
+
+try:
+    from google import genai
+    gemini_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+except Exception:
+    gemini_client = None
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -179,44 +185,88 @@ def generate_hybrid(messages, tools, confidence_threshold=0.5):
     }
     threshold = THRESHOLDS.get(complexity, confidence_threshold)
     
-    # ── Step 1: Initialize SDK Cloud Auth ──
-    # This enables the automatic escalation logic and cloud fallback
-    auth = cactus_auth(api_key=os.environ.get("GEMINI_API_KEY"))
-    
-    # ── Step 2: Single Unified Call ──
+    # ── Step 1: Try On-Device via Cactus SDK ──
     model = cactus_init(functiongemma_path)
     
-    # Cactus v1.7 expects raw tool definitions
-    raw_str = cactus_complete(
-        model,
-        messages, 
-        tools=tools,               # Raw list of function schemas
-        auth=auth,                 # Enables cloud fallback
-        threshold=threshold,       # Routing threshold
-        temperature=0.0,           # Deterministic
-        max_tokens=512,
-    )
-    
-    cactus_destroy(model)
+    try:
+        raw_str = cactus_complete(
+            model,
+            messages, 
+            tools=tools,
+            temperature=0.0,
+            max_tokens=512,
+        )
+    except Exception as e:
+        raw_str = json.dumps({"function_calls": [], "confidence": 0, "source": f"cactus-error: {e}"})
+    finally:
+        cactus_destroy(model)
     
     try:
         raw = json.loads(raw_str)
-        # Robust key extraction for various SDK versions/sources
-        calls = raw.get("function_calls") or raw.get("tool_calls") or raw.get("calls") or []
-        
+    except json.JSONDecodeError:
+        raw = {"function_calls": [], "confidence": 0}
+    
+    local_confidence = raw.get("confidence", 0)
+    calls = raw.get("function_calls") or raw.get("tool_calls") or raw.get("calls") or []
+    source = raw.get("source", "on-device")
+    total_time = raw.get("total_time_ms", 0)
+    
+    # ── Step 2: Cloud Fallback if confidence too low or no calls ──
+    if (local_confidence < threshold or len(calls) == 0) and gemini_client:
+        try:
+            tool_desc = "\n".join(
+                f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}"
+                for t in tools
+            )
+            system_prompt = (
+                "You are a function-calling assistant. Given the user query, "
+                "return a JSON object with a 'function_calls' array. Each call "
+                "must have 'name' (string) and 'arguments' (object).\n\n"
+                f"Available tools:\n{tool_desc}\n\n"
+                "Return ONLY valid JSON. No explanation."
+            )
+            
+            cloud_messages = [
+                {"role": "user", "parts": [{"text": system_prompt + "\n\nUser: " + messages[-1].get('content', '')}]}
+            ]
+            
+            cloud_start = time.time()
+            response = gemini_client.models.generate_content(
+                model=CLOUD_MODEL,
+                contents=cloud_messages,
+            )
+            cloud_time = int((time.time() - cloud_start) * 1000)
+            
+            cloud_text = response.text.strip()
+            # Strip markdown code fences if present
+            if cloud_text.startswith("```"):
+                cloud_text = re.sub(r'^```(?:json)?\s*', '', cloud_text)
+                cloud_text = re.sub(r'\s*```$', '', cloud_text)
+            
+            cloud_raw = json.loads(cloud_text)
+            calls = cloud_raw.get("function_calls") or cloud_raw.get("tool_calls") or []
+            source = "cloud"
+            total_time = cloud_time
+            local_confidence = 0.95  # Cloud is high confidence
+        except Exception as e:
+            # Cloud failed too — keep whatever on-device returned
+            source = f"cloud-error: {str(e)}"
+    
+    # ── Step 3: Post-process and validate ──
+    try:
         processed_calls = [postprocess_call(c, tools) for c in calls]
         trn = validate_tool_calls(processed_calls, tools)
         
         return {
             "function_calls": processed_calls,
-            "total_time_ms": raw.get("total_time_ms", 0),
-            "confidence": raw.get("confidence", 0),
-            "source": raw.get("source", "cactus-unified"),
+            "total_time_ms": total_time,
+            "confidence": local_confidence,
+            "source": source,
             "complexity": complexity,
             "trn_score": trn["score"],
         }
         
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as e:
         return {
             "function_calls": [],
             "total_time_ms": 0,
